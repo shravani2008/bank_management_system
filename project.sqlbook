@@ -1,0 +1,226 @@
+-- SQLBook: Code
+-- =========================================
+-- PROFESSIONAL BANK MANAGEMENT SYSTEM
+-- =========================================
+
+-- 0️⃣ Drop existing database if exists and create fresh
+DROP DATABASE IF EXISTS BankDB;
+CREATE DATABASE BankDB;
+USE BankDB;
+
+-- =========================================
+-- 1️⃣ Create Tables in Correct Order
+-- =========================================
+
+-- Customer Table (Parent)
+CREATE TABLE Customer (
+    CustomerID INT AUTO_INCREMENT PRIMARY KEY, -- Customer ID
+    Name VARCHAR(50) NOT NULL,                 -- Customer Name
+    Email VARCHAR(50) UNIQUE,                  -- Unique Email
+    Phone VARCHAR(15) UNIQUE,                  -- Unique Phone
+    Address VARCHAR(100),                      -- Address
+    DateOfBirth DATE                           -- DOB
+);
+
+-- Account Table (Child referencing Customer)
+CREATE TABLE Account (
+    AccountID INT AUTO_INCREMENT PRIMARY KEY,
+    CustomerID INT NOT NULL,
+    AccountType VARCHAR(20) NOT NULL,
+    Balance DECIMAL(10,2) DEFAULT 0 CHECK (Balance >= 0),
+    DateCreated DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (CustomerID) REFERENCES Customer(CustomerID)
+        ON DELETE CASCADE
+        ON UPDATE CASCADE
+);
+
+-- Transaction Table (Child referencing Account)
+CREATE TABLE TransactionTable (
+    TransactionID INT AUTO_INCREMENT PRIMARY KEY,
+    AccountID INT NOT NULL,
+    TransactionType VARCHAR(30) NOT NULL,
+    Amount DECIMAL(10,2) NOT NULL CHECK (Amount > 0),
+    DateTime DATETIME DEFAULT CURRENT_TIMESTAMP,
+    Description VARCHAR(500),
+    FOREIGN KEY (AccountID) REFERENCES Account(AccountID)
+        ON DELETE CASCADE
+        ON UPDATE CASCADE
+);
+
+-- =========================================
+-- 2️⃣ Indexes
+-- =========================================
+CREATE INDEX idx_account ON TransactionTable(AccountID);
+CREATE INDEX idx_customer ON Account(CustomerID);
+
+-- =========================================
+-- 3️⃣ Views
+-- =========================================
+CREATE OR REPLACE VIEW CustomerAccountView AS
+SELECT c.CustomerID, c.Name, c.Phone, c.Email, a.AccountID, a.AccountType, a.Balance
+FROM Customer c
+JOIN Account a ON c.CustomerID = a.CustomerID;
+
+CREATE OR REPLACE VIEW HighValueTransactions AS
+SELECT t.TransactionID, c.Name AS CustomerName, a.AccountType, t.Amount, t.DateTime
+FROM TransactionTable t
+JOIN Account a ON t.AccountID = a.AccountID
+JOIN Customer c ON a.CustomerID = c.CustomerID
+WHERE t.Amount > 5000;
+
+-- =========================================
+-- 4️⃣ Procedures (with automatic balance display)
+-- =========================================
+DELIMITER //
+
+-- Deposit Procedure
+CREATE PROCEDURE DepositAmount(IN accID INT, IN depAmount DECIMAL(10,2))
+BEGIN
+    UPDATE Account SET Balance = Balance + depAmount WHERE AccountID = accID;
+    INSERT INTO TransactionTable(AccountID, TransactionType, Amount, Description)
+    VALUES(accID, 'Deposit', depAmount, 'Deposit via procedure');
+    SELECT AccountID, Balance FROM Account WHERE AccountID = accID; -- Show new balance
+END //
+
+-- Withdraw Procedure
+CREATE PROCEDURE WithdrawAmount(IN accID INT, IN wdAmount DECIMAL(10,2))
+BEGIN
+    DECLARE currBalance DECIMAL(10,2);
+    SELECT Balance INTO currBalance FROM Account WHERE AccountID = accID;
+
+    IF currBalance >= wdAmount THEN
+        UPDATE Account SET Balance = Balance - wdAmount WHERE AccountID = accID;
+        INSERT INTO TransactionTable(AccountID, TransactionType, Amount, Description)
+        VALUES(accID, 'Withdrawal', wdAmount, 'Withdrawal via procedure');
+        SELECT AccountID, Balance FROM Account WHERE AccountID = accID; -- Show new balance
+    ELSE
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Insufficient Balance!';
+    END IF;
+END //
+
+-- Check Balance Procedure
+CREATE PROCEDURE CheckBalance(IN accID INT)
+BEGIN
+    SELECT AccountID, Balance FROM Account WHERE AccountID = accID;
+END //
+
+-- Transfer Procedure
+CREATE PROCEDURE TransferAmount(IN fromAcc INT, IN toAcc INT, IN amount DECIMAL(10,2))
+BEGIN
+    DECLARE senderBalance DECIMAL(10,2);
+    SELECT Balance INTO senderBalance FROM Account WHERE AccountID = fromAcc;
+
+    IF senderBalance >= amount THEN
+        -- Deduct from sender
+        UPDATE Account SET Balance = Balance - amount WHERE AccountID = fromAcc;
+        INSERT INTO TransactionTable(AccountID, TransactionType, Amount, Description)
+        VALUES(fromAcc, 'Transfer Out', amount, CONCAT('Transferred to Account ', toAcc));
+
+        -- Add to receiver
+        UPDATE Account SET Balance = Balance + amount WHERE AccountID = toAcc;
+        INSERT INTO TransactionTable(AccountID, TransactionType, Amount, Description)
+        VALUES(toAcc, 'Transfer In', amount, CONCAT('Received from Account ', fromAcc));
+
+        -- Show updated balances
+        SELECT AccountID, Balance FROM Account WHERE AccountID IN (fromAcc, toAcc);
+    ELSE
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Insufficient Balance for Transfer!';
+    END IF;
+END //
+
+DELIMITER ;
+
+-- =========================================
+-- 5️⃣ Function
+-- =========================================
+DELIMITER //
+CREATE FUNCTION TotalBalance(custID INT) RETURNS DECIMAL(10,2)
+NOT DETERMINISTIC
+READS SQL DATA
+BEGIN
+    DECLARE total DECIMAL(10,2);
+    SELECT SUM(Balance) INTO total FROM Account WHERE CustomerID = custID;
+    RETURN total;
+END //
+DELIMITER ;
+
+-- =========================================
+-- 6️⃣ Trigger (prevent negative balance)
+-- =========================================
+DELIMITER //
+CREATE TRIGGER before_account_update
+BEFORE UPDATE ON Account
+FOR EACH ROW
+BEGIN
+    IF NEW.Balance < 0 THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Balance cannot be negative!';
+    END IF;
+END //
+DELIMITER ;
+
+-- =========================================
+-- 7️⃣ Insert Sample Data
+-- =========================================
+INSERT INTO Customer(Name, Email, Phone, Address, DateOfBirth) VALUES
+('Shravni Patil','shrau@example.com','9876543210','Pune, India','2005-08-15'),
+('Sakshi Patil','sakshi@example.com','9876543211','Pune, India','2007-03-07');
+
+INSERT INTO Account(CustomerID, AccountType, Balance) VALUES
+(1, 'Saving', 5000),
+(2, 'Current', 10000);
+
+INSERT INTO TransactionTable(AccountID, TransactionType, Amount, Description) VALUES
+(1, 'Deposit', 5000, 'Initial deposit for Shravni'),
+(2, 'Deposit', 10000, 'Initial deposit for Sakshi');
+
+-- =========================================
+-- 8️⃣ Test Procedures
+-- =========================================
+CALL DepositAmount(1, 2000);
+CALL WithdrawAmount(2, 500);
+CALL TransferAmount(1, 2, 1000);
+
+CALL CheckBalance(1);
+CALL CheckBalance(2);
+
+-- =========================================
+-- 9️⃣ Test Function
+-- =========================================
+SELECT TotalBalance(1) AS Customer1TotalBalance;
+
+-- =========================================
+-- 🔟 View Queries
+SELECT * FROM CustomerAccountView;
+SELECT * FROM HighValueTransactions;
+
+-- =========================================
+-- 1️⃣1️⃣ Trigger Test (try negative balance)
+-- This should raise an error
+-- UPDATE Account SET Balance = -100 WHERE AccountID = 1;
+
+-- =========================================
+-- 1️⃣2️⃣ TCL Example
+START TRANSACTION;
+CALL DepositAmount(1, 1000);
+CALL WithdrawAmount(2, 500);
+COMMIT;
+
+START TRANSACTION;
+CALL DepositAmount(1, 2000);
+ROLLBACK;
+
+-- =========================================
+-- 1️⃣3️⃣ Show All Objects
+SHOW TABLES;
+SHOW PROCEDURE STATUS WHERE Db = 'BankDB';
+SHOW FUNCTION STATUS WHERE Db = 'BankDB';
+SHOW TRIGGERS;
+SHOW INDEX FROM Account;
+SHOW INDEX FROM TransactionTable;
+SHOW FULL TABLES WHERE Table_type = 'VIEW';
+
+
+
+
+
+
